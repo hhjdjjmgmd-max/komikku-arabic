@@ -1,0 +1,7 @@
+*.apk
+*.p12
+*.jks
+*.keystore
+.env
+build/
+.work*/

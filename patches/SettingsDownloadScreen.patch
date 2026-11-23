@@ -1,0 +1,13 @@
+--- a/eu/kanade/presentation/more/settings/screen/SettingsDownloadScreen.smali
++++ b/eu/kanade/presentation/more/settings/screen/SettingsDownloadScreen.smali
+@@ -4279,6 +4279,10 @@
+ 
+     .line 85
+     :cond_7
++    invoke-static {v1, v4}, Leu/kanade/presentation/more/settings/screen/ArabicDownloadOption;->prepend(Ljava/util/List;Landroidx/compose/runtime/Composer;)Ljava/util/List;
++
++    move-result-object v1
++
+     invoke-interface {v4}, Landroidx/compose/runtime/Composer;->endReplaceGroup()V
+ 
+     .line 45

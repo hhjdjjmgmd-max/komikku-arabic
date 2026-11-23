@@ -1,0 +1,13 @@
+--- a/eu/kanade/tachiyomi/data/download/Downloader.smali
++++ b/eu/kanade/tachiyomi/data/download/Downloader.smali
+@@ -4049,6 +4049,10 @@
+ 
+     move-result v7
+ 
++    iget-object v12, v1, Leu/kanade/tachiyomi/data/download/Downloader;->context:Landroid/content/Context;
++
++    invoke-static {v12, v2, v10, v6, v7}, Leu/kanade/tachiyomi/ui/reader/translation/DownloadArabicTranslation;->prepare(Landroid/content/Context;Leu/kanade/tachiyomi/data/download/model/Download;Lcom/hippo/unifile/UniFile;Lkotlin/coroutines/Continuation;Z)V
++
+     if-eqz v7, :cond_10
+ 
+     .line 442
