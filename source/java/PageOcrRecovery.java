@@ -23,6 +23,9 @@ public final class PageOcrRecovery {
     private static final Pattern STRETCHED_WHAT = Pattern.compile(
             "(?i)^wh[a]+(?:[\\s-]+a+){1,5}[\\s-]+t([!?]+)$");
 
+    private static final Pattern OCR_NOISE = Pattern.compile(
+            "(?i)\\b(?:[0-9]+[a-z]{3,}|[a-z]{2,}[0-9]+[a-z]{2,})\\b");
+
     private PageOcrRecovery() {}
 
     public static File refreshFile(File file) {
@@ -34,6 +37,15 @@ public final class PageOcrRecovery {
         if (page.getWidth() < 40 || page.getHeight() < 80) return primary;
         List<ArabicPageRenderer$TextBox> boxes = new ArrayList<>(primary);
         long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(retry ? 6500 : 3500);
+        int crops = 0;
+        long cropDeadline = Math.min(deadline, System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(retry ? 2000 : 1000));
+        for (int i = 0; i < primary.size() && crops < 2 && System.nanoTime() < cropDeadline; i++) {
+            ArabicPageRenderer$TextBox box = primary.get(i);
+            if (!suspicious(box.getText())) continue;
+            crops++;
+            String corrected = reread(page, box, recognizer, cropDeadline);
+            if (corrected != null) boxes.set(i, new ArabicPageRenderer$TextBox(box.getBounds(), corrected));
+        }
         int strips = retry ? 5 : 3;
         int height = page.getHeight();
         int overlap = Math.max(24, height / (strips * 5));
@@ -47,6 +59,48 @@ public final class PageOcrRecovery {
                 box -> Math.round(box.getBounds().centerY() / Math.max(10f, page.getWidth() / 40f)))
                 .thenComparingDouble(box -> -box.getBounds().centerX()));
         return boxes;
+    }
+
+    static boolean suspicious(String text) {
+        return OCR_NOISE.matcher(text).find();
+    }
+
+    static boolean betterReading(String original, String candidate) {
+        int oldLength = normalized(original).length();
+        int length = normalized(candidate).length();
+        return !suspicious(candidate) && length >= Math.max(3, (oldLength * 3 + 3) / 4)
+                && length <= oldLength * 5 / 4 + 1 && WORD.matcher(candidate).find();
+    }
+
+    private static String reread(Bitmap page, ArabicPageRenderer$TextBox box,
+            TextRecognizer recognizer, long deadline) {
+        RectF bounds = box.getBounds();
+        int margin = Math.max(4, (int) (bounds.height() / 8));
+        Rect region = new Rect(Math.max(0, (int) bounds.left - margin),
+                Math.max(0, (int) bounds.top - margin),
+                Math.min(page.getWidth(), (int) Math.ceil(bounds.right) + margin),
+                Math.min(page.getHeight(), (int) Math.ceil(bounds.bottom) + margin));
+        if (region.width() < 8 || region.height() < 8) return null;
+        float scale = (float) Math.min(2.5, Math.sqrt(800_000d / (region.width() * (double) region.height())));
+        Bitmap crop = Bitmap.createBitmap(Math.max(1, Math.round(region.width() * scale)),
+                Math.max(1, Math.round(region.height() * scale)), Bitmap.Config.ARGB_8888);
+        Task<Text> task = null;
+        try {
+            new android.graphics.Canvas(crop).drawBitmap(page, region,
+                    new Rect(0, 0, crop.getWidth(), crop.getHeight()), new android.graphics.Paint(2));
+            task = recognizer.process(InputImage.fromBitmap(crop, 0));
+            long remaining = Math.max(1, TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()));
+            String text = cleanText(Tasks.await(task, remaining, TimeUnit.MILLISECONDS).getText());
+            return betterReading(box.getText(), text) ? text : null;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return null;
+        } catch (ExecutionException | TimeoutException unavailable) {
+            return null;
+        } finally {
+            if (task == null || task.isComplete()) crop.recycle();
+            else task.addOnCompleteListener(Runnable::run, ignored -> crop.recycle());
+        }
     }
 
     private static void readStrip(Bitmap page, int top, int bottom, TextRecognizer recognizer,
@@ -91,7 +145,7 @@ public final class PageOcrRecovery {
     }
 
     static String cleanText(String text) {
-        String compact = text.trim().replaceAll("\\s+", " ");
+        String compact = EnglishLineWrap.joinWords(text).trim().replaceAll("\\s+", " ");
         java.util.regex.Matcher shout = STRETCHED_WHAT.matcher(compact);
         return shout.matches() ? "What" + shout.group(1) : compact;
     }

@@ -31,7 +31,7 @@ public final class DownloadArabicTranslation {
     private static final String PREFS = "arabic_download_translation";
     private static final String LANGUAGE = "source_language";
     private static final Semaphore TRANSLATION_SLOT = new Semaphore(1, true);
-    private static final String[] CHOICES = {"إيقاف", "الإنكليزية", "اليابانية", "الكورية", "الصينية"};
+    private static final String[] CHOICES = {"إيقاف", "الإنكليزية", "اليابانية", "الكورية", "الصينية", "تعرّف تلقائي على اللغة"};
 
     private DownloadArabicTranslation() {}
 
@@ -48,7 +48,7 @@ public final class DownloadArabicTranslation {
                     dialog.dismiss();
                     Toast.makeText(context, index == 0
                             ? "التنزيلات الجديدة باللغة الأصلية"
-                            : "التنزيلات الجديدة تجهز بالعربي من " + CHOICES[index],
+                            : "التنزيلات الجديدة تجهز بالعربي بخيار " + CHOICES[index],
                             Toast.LENGTH_SHORT).show();
                 })
                 .setNegativeButton("رجوع", null)
@@ -61,6 +61,7 @@ public final class DownloadArabicTranslation {
             case 2: return PageLanguage.Japanese;
             case 3: return PageLanguage.Korean;
             case 4: return PageLanguage.Chinese;
+            case 5: return PageLanguage.Auto;
             default: return null;
         }
     }

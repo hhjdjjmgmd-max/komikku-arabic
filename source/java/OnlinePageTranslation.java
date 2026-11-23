@@ -1,7 +1,5 @@
 package eu.kanade.tachiyomi.ui.reader.translation;
 
-import com.google.android.gms.tasks.Task;
-import com.google.mlkit.nl.translate.Translator;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -38,6 +36,12 @@ public final class OnlinePageTranslation {
     public static Map<ArabicPageRenderer$TextBox, String> translatePage(
             List<ArabicPageRenderer$TextBox> boxes, String language) {
         Map<ArabicPageRenderer$TextBox, String> translated = new IdentityHashMap<>();
+        for (ArabicPageRenderer$TextBox box : boxes) {
+            String known = DialogueText.arabic(box.getText());
+            if (DialogueText.hasArabic(known) && !DialogueText.hasForeignLetters(known)) {
+                translated.put(box, known);
+            }
+        }
         long deadline = System.nanoTime() + PAGE_BUDGET;
         translatePending(boxes, language.equals("zh") ? "zh-CN" : language,
                 translated, true, deadline);
@@ -51,16 +55,19 @@ public final class OnlinePageTranslation {
         List<ArabicPageRenderer$TextBox> batch = new ArrayList<>();
         List<String> lines = new ArrayList<>();
         int batchBytes = 0;
+        int[] contextualRetries = {2};
         int limit = google ? GOOGLE_ENCODED_QUERY_BYTES : MY_MEMORY_QUERY_BYTES;
         for (ArabicPageRenderer$TextBox box : boxes) {
             if (deadline - System.nanoTime() <= 0 || coolingDown(google)) return;
             if (translated.containsKey(box)) continue;
             // Keep separate runs of missing dialogue adjacent in the original reading order.
-            String text = box.getText().trim().replaceAll("\\s+", " ");
+            String text = box.getText().trim();
             if (text.isEmpty() || MARKER.matcher(text).find()) continue;
+            text = language.equals("en") ? DialogueText.englishForTranslation(text)
+                    : DialogueText.cjkForTranslation(text, language);
             int size = (google ? encode(text).length() : text.getBytes(StandardCharsets.UTF_8).length) + 30;
             if (!batch.isEmpty() && batchBytes + size > limit) {
-                if (!fetch(batch, lines, language, translated, google, deadline)) return;
+                if (!fetch(batch, lines, language, translated, google, deadline, contextualRetries)) return;
                 batch.clear();
                 lines.clear();
                 batchBytes = 0;
@@ -70,7 +77,7 @@ public final class OnlinePageTranslation {
             lines.add(text);
             batchBytes += size;
         }
-        if (!batch.isEmpty()) fetch(batch, lines, language, translated, google, deadline);
+        if (!batch.isEmpty()) fetch(batch, lines, language, translated, google, deadline, contextualRetries);
     }
 
     private static boolean coolingDown(boolean google) {
@@ -80,18 +87,35 @@ public final class OnlinePageTranslation {
 
     private static boolean fetch(List<ArabicPageRenderer$TextBox> batch, List<String> lines,
                                  String language, Map<ArabicPageRenderer$TextBox, String> output,
-                                 boolean google, long deadline) {
+                                 boolean google, long deadline, int[] contextualRetries) {
         if (deadline - System.nanoTime() <= 0 || coolingDown(google)) return false;
         try {
-            String query = requestText(lines);
-            String url = google
-                    ? GOOGLE + "?client=gtx&dt=t&sl=" + encode(language) + "&tl=ar&q=" + encode(query)
-                    : MY_MEMORY + "?langpair=" + encode(language + "|ar") + "&q=" + encode(query);
-            String body = response(url, deadline);
-            String translated = google ? googleText(body) : memoryText(body);
-            List<String> regions = splitTranslation(translated, batch.size());
-            if (regions == null) return true;
-            for (int i = 0; i < regions.size(); i++) output.put(batch.get(i), regions.get(i));
+            List<String> regions = splitTranslation(translate(requestText(lines), language, google, deadline),
+                    batch.size());
+            for (int i = 0; i < batch.size(); i++) {
+                ArabicPageRenderer$TextBox box = batch.get(i);
+                boolean accepted = regions != null && store(output, box, regions.get(i), language);
+                if (needsContext(output.get(box)) && contextualRetries[0] > 0
+                        && batch.size() > 1 && deadline - System.nanoTime() > 0) {
+                    int start = Math.max(0, i - 1);
+                    int end = Math.min(i + 2, lines.size());
+                    List<String> neighbors = lines.subList(start, end);
+                    contextualRetries[0]--;
+                    if (neighbors.size() < lines.size()) {
+                        String query = requestText(neighbors);
+                        int bytes = google ? encode(query).length() : query.getBytes(StandardCharsets.UTF_8).length;
+                        if (bytes <= (google ? GOOGLE_ENCODED_QUERY_BYTES : MY_MEMORY_QUERY_BYTES)) {
+                            List<String> retry = splitTranslation(translate(query, language, google, deadline), end - start);
+                            if (retry != null) accepted |= store(output, box, retry.get(i - start), language);
+                        }
+                    } else if (accepted) {
+                        store(output, box, translate(lines.get(i), language, google, deadline), language);
+                    }
+                }
+                if (!accepted && batch.size() > 1 && deadline - System.nanoTime() > 0) {
+                    store(output, box, translate(lines.get(i), language, google, deadline), language);
+                }
+            }
             return true;
         } catch (IOException | JSONException failure) {
             long retry = System.nanoTime() + RETRY_DELAY;
@@ -99,6 +123,45 @@ public final class OnlinePageTranslation {
             else memoryRetryAt = retry;
             return false;
         }
+    }
+
+    private static boolean store(Map<ArabicPageRenderer$TextBox, String> output,
+                                 ArabicPageRenderer$TextBox box, String response, String language) {
+        String translated = DialogueText.arabic(response);
+        if (!DialogueText.hasArabic(translated) || DialogueText.hasSourceScript(translated, language)) return false;
+        String prior = output.get(box);
+        if (prior != null && !betterAlternative(prior, translated)) return true;
+        output.put(box, translated);
+        return true;
+    }
+
+    private static boolean needsContext(String text) {
+        return text == null || DialogueText.hasForeignLetters(text);
+    }
+
+    static boolean betterAlternative(String previous, String candidate) {
+        int previousArabic = arabicLetters(previous);
+        return arabicLetters(candidate) >= Math.max(1, (previousArabic * 2 + 2) / 3)
+                && foreignLetters(candidate) < foreignLetters(previous);
+    }
+
+    private static int arabicLetters(String text) {
+        return (int) text.codePoints().filter(c -> Character.isLetter(c)
+                && Character.UnicodeScript.of(c) == Character.UnicodeScript.ARABIC).count();
+    }
+
+    private static int foreignLetters(String text) {
+        return (int) text.codePoints().filter(c -> Character.isLetter(c)
+                && Character.UnicodeScript.of(c) != Character.UnicodeScript.ARABIC).count();
+    }
+
+    private static String translate(String query, String language, boolean google, long deadline)
+            throws IOException, JSONException {
+        String url = google
+                ? GOOGLE + "?client=gtx&dt=t&sl=" + encode(language) + "&tl=ar&q=" + encode(query)
+                : MY_MEMORY + "?langpair=" + encode(language + "|ar") + "&q=" + encode(query);
+        String body = response(url, deadline);
+        return google ? googleText(body) : memoryText(body);
     }
 
     static String requestText(List<String> lines) {
@@ -193,7 +256,8 @@ public final class OnlinePageTranslation {
         }
     }
 
-    public static Task<String> translateOffline(Translator translator, String text) {
-        return translator.downloadModelIfNeeded().onSuccessTask(ignored -> translator.translate(text));
+    public static void retryOnline() {
+        googleRetryAt = 0;
+        memoryRetryAt = 0;
     }
 }
