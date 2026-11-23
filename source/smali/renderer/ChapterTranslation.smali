@@ -4155,6 +4155,8 @@
 
     .line 31
     :cond_1
+    const/4 v10, 0x0
+
     move/from16 v9, p3
 
     if-nez v9, :cond_4
@@ -4163,8 +4165,6 @@
 
     .line 32
     .local v9, "existing":Leu/kanade/tachiyomi/ui/reader/translation/ChapterTranslation$Session;
-    const/4 v10, 0x0
-
     if-eqz v9, :cond_2
 
     invoke-virtual {v9}, Leu/kanade/tachiyomi/ui/reader/translation/ChapterTranslation$Session;->getChapter()Leu/kanade/tachiyomi/ui/reader/model/ReaderChapter;
